@@ -5,7 +5,12 @@ export interface TavilySearchResult {
   score: number;
 }
 
-export async function searchTavily(query: string): Promise<TavilySearchResult[]> {
+export interface TavilyResponse {
+  results: TavilySearchResult[];
+  answer?: string;
+}
+
+export async function searchTavily(query: string, includeAnswer = false): Promise<TavilyResponse> {
   const apiKey = process.env.TAVILY_API_KEY;
   if (!apiKey) throw new Error("Missing TAVILY_API_KEY");
 
@@ -18,7 +23,7 @@ export async function searchTavily(query: string): Promise<TavilySearchResult[]>
       api_key: apiKey,
       query: query,
       search_depth: "basic",
-      include_answer: false,
+      include_answer: includeAnswer,
       include_images: false,
       include_raw_content: false,
       max_results: 6,
@@ -30,5 +35,8 @@ export async function searchTavily(query: string): Promise<TavilySearchResult[]>
   }
 
   const data = await res.json();
-  return data.results;
+  return {
+    results: data.results,
+    answer: data.answer,
+  };
 }

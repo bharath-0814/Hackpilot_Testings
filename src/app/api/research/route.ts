@@ -6,43 +6,55 @@ import { withDemoSafe, SEED_DATA } from '@/lib/demosafe';
 
 export async function POST(req: Request) {
   try {
-    const { topicTitle } = await req.json();
+    const { topicTitle, type = 'thesis' } = await req.json();
     if (!topicTitle) {
       return NextResponse.json({ error: "Missing topicTitle" }, { status: 400 });
     }
 
-    // 1. Create a Topic entry in Turso
+    const includeAnswer = type === 'explain';
+    let queryPrefix = '';
+    if (type === 'thesis') queryPrefix = 'arguments for and against: ';
+    if (type === 'fact_check') queryPrefix = 'fact check: ';
+    if (type === 'explain') queryPrefix = 'explain in simple terms: ';
+
+    // 1. Fetch from Tavily with a Demo-safe fallback (5 second timeout)
+    const rawResults = await withDemoSafe(
+      searchTavily(`${queryPrefix}${topicTitle}`, includeAnswer),
+      SEED_DATA,
+      5000
+    );
+
+    // 2. Create a Topic entry in Turso
     const topicId = crypto.randomUUID();
     await db.insert(topics).values({
       id: topicId,
       title: topicTitle,
+      type: type,
+      answer: rawResults.answer || null,
     });
 
-    // 2. Fetch from Tavily with a Demo-safe fallback (5 second timeout)
-    const rawResults = await withDemoSafe(
-      searchTavily(`arguments for and against: ${topicTitle}`),
-      SEED_DATA.map(d => ({ title: d.title, url: d.url, content: d.content, score: 1 })),
-      5000
-    );
-
-    // 3. Very naive classification for the sake of a fast hackathon demo
-    const sourceInserts = rawResults.map((r, i) => ({
-      id: crypto.randomUUID(),
-      topicId: topicId,
-      title: r.title,
-      url: r.url,
-      snippet: r.content,
-      // Just alternate stances or guess based on keywords if we want to be fancy.
-      // We'll alternate for now to guarantee 50/50 split on the board.
-      stance: i % 2 === 0 ? 'pro' : 'con',
-    }));
+    // 3. Classify sources
+    const sourceInserts = rawResults.results.map((r, i) => {
+      let stance = 'neutral';
+      if (type === 'thesis') {
+        stance = i % 2 === 0 ? 'pro' : 'con';
+      }
+      return {
+        id: crypto.randomUUID(),
+        topicId: topicId,
+        title: r.title,
+        url: r.url,
+        snippet: r.content,
+        stance: stance,
+      };
+    });
 
     // 4. Save to Turso
     if (sourceInserts.length > 0) {
       await db.insert(sources).values(sourceInserts);
     }
 
-    return NextResponse.json({ topicId, sources: sourceInserts });
+    return NextResponse.json({ topicId, sources: sourceInserts, answer: rawResults.answer });
   } catch (error) {
     console.error("Research API error:", error);
     return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });
